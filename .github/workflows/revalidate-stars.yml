@@ -1,0 +1,18 @@
+name: Revalidate star status
+
+# Fallback path for keeping contribution scores accurate: calls the app's
+# protected /api/cron/revalidate endpoint on a schedule, in case a GitHub
+# webhook delivery was missed or a starred repo has no webhook configured.
+on:
+  schedule:
+    - cron: "*/15 * * * *" # every 15 minutes
+  workflow_dispatch: {}
+
+jobs:
+  revalidate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call revalidation endpoint
+        run: |
+          curl -fsS -X GET "${{ secrets.APP_URL }}/api/cron/revalidate" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}"
