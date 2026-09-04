@@ -114,8 +114,28 @@ scripts/revalidate-stars.ts  # standalone cron entrypoint
 - GitHub OAuth access tokens are encrypted at rest (AES-256-GCM) and only ever decrypted
   server-side to call the GitHub API on the user's behalf — never sent to the client.
 - Sessions are database-backed, so access can be revoked by deleting `Session` rows.
-- Webhook payloads are verified via HMAC-SHA256 signature before being trusted.
+- Webhook payloads are verified via HMAC-SHA256 signature before being trusted, and are
+  strictly schema-validated (zod) after that so a malformed or unexpected body returns a
+  clean 400 instead of an unhandled 500.
+- Bearer-secret protected endpoints (`/api/cron/revalidate`) use a constant-time
+  comparison and fail closed if the secret env var is unset — an unset secret can never
+  match an attacker-supplied header.
+- All state-changing API routes (`POST /api/stars`, `POST /api/stars/:id`) check the
+  request's `Origin` against the app's canonical URL as a second, independent layer of
+  CSRF protection on top of NextAuth's `SameSite=Lax` session cookie.
 - API routes are protected by a lightweight sliding-window rate limiter, separate from
   GitHub's own rate limits (which are also respected, with graceful fallback to cached
-  data when exhausted).
-- The `/api/cron/revalidate` endpoint requires a bearer secret and is not user-facing.
+  data when exhausted). It's in-memory and per-instance — fine for a single-instance
+  deployment, but swap in a shared store (`@upstash/ratelimit` or similar) behind the same
+  `rateLimit()` interface before scaling to multiple instances/regions. It keys on
+  `X-Forwarded-For`, which is only trustworthy behind a proxy/CDN that sets it itself
+  (Vercel, Cloudflare, nginx) — don't expose the app directly to the internet without one.
+- All query-string inputs (pagination, limits, category filters) are bounds-checked so a
+  malformed value (`NaN`, negative, oversized) can't reach the database layer.
+- Global security headers (CSP, HSTS, `X-Frame-Options: DENY`, `X-Content-Type-Options`,
+  `Permissions-Policy`, no `X-Powered-By`) are set for every route in `next.config.mjs`.
+- Dependabot and CodeQL run on a schedule and on every push/PR (`.github/workflows/`); CI
+  also runs `npm audit --audit-level=high` on every PR. See `SECURITY.md` for how to
+  report a vulnerability.
+- Runs on Next.js 14.2.35+, which includes the December 2025 patches for the React Server
+  Components DoS/source-exposure CVEs (CVE-2025-55183/55184/67779) — don't downgrade.

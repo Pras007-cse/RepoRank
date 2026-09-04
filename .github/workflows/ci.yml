@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  lint-and-build:
+    runs-on: ubuntu-latest
+    env:
+      # Dummy values so `next build` (which loads env at build time) and
+      # `prisma generate` succeed in CI without touching a real database or
+      # any real secret. Never used to serve traffic.
+      DATABASE_URL: "postgresql://user:password@localhost:5432/reporank"
+      NEXTAUTH_SECRET: "ci-placeholder-secret-not-used-in-production"
+      NEXTAUTH_URL: "http://localhost:3000"
+      GITHUB_CLIENT_ID: "ci-placeholder"
+      GITHUB_CLIENT_SECRET: "ci-placeholder"
+      TOKEN_ENCRYPTION_KEY: "/6/fG/T5OoFYVgdmzhnyHlYombFJc9ZIwgeT/ClzC44="
+      GITHUB_WEBHOOK_SECRET: "ci-placeholder"
+      CRON_SECRET: "ci-placeholder"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
+
+      - name: Audit dependencies for known vulnerabilities
+        # `audit-level=high` keeps this from blocking on low-severity noise
+        # while still failing the build on anything that actually matters.
+        run: npm audit --audit-level=high

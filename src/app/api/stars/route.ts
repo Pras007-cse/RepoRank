@@ -5,6 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { getUserOctokit, starRepoForUser, isRepoStarredByUser, GitHubRateLimitError } from "@/lib/github";
 import { recomputeUserScore, recomputeGlobalRanks } from "@/lib/scoring";
 import { rateLimit } from "@/lib/rateLimit";
+import { assertSameOrigin } from "@/lib/csrf";
 import { z } from "zod";
 
 const bodySchema = z.object({
@@ -37,6 +38,10 @@ export async function GET() {
  * 4. Recomputes the user's contribution score + global ranks.
  */
 export async function POST(req: NextRequest) {
+  if (!assertSameOrigin(req)) {
+    return NextResponse.json({ error: "Invalid request origin." }, { status: 403 });
+  }
+
   const session = await getServerSession(authOptions);
   if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

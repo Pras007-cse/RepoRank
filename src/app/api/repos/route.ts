@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { searchRepositories, GitHubRateLimitError } from "@/lib/github";
 import { inferCategory } from "@/lib/category";
-import { rateLimit } from "@/lib/rateLimit";
+import { rateLimit, getClientIp } from "@/lib/rateLimit";
 import type { Category } from "@prisma/client";
 
 const VALID_CATEGORIES = new Set([
@@ -19,7 +19,7 @@ const VALID_CATEGORIES = new Set([
 ]);
 
 export async function GET(req: NextRequest) {
-  const ip = req.headers.get("x-forwarded-for") ?? "anonymous";
+  const ip = getClientIp(req);
   const rl = rateLimit(`repos:${ip}`, { limit: 30, windowMs: 60_000 });
   if (!rl.allowed) {
     return NextResponse.json(
@@ -29,10 +29,11 @@ export async function GET(req: NextRequest) {
   }
 
   const { searchParams } = new URL(req.url);
-  const query = searchParams.get("q")?.trim() ?? "";
-  const language = searchParams.get("language")?.trim() || undefined;
+  const query = (searchParams.get("q")?.trim() ?? "").slice(0, 200);
+  const language = searchParams.get("language")?.trim().slice(0, 50) || undefined;
   const category = searchParams.get("category")?.trim().toUpperCase();
-  const page = Math.max(1, Number(searchParams.get("page") ?? 1));
+  const rawPage = Number(searchParams.get("page") ?? 1);
+  const page = Number.isFinite(rawPage) ? Math.min(100, Math.max(1, Math.trunc(rawPage))) : 1;
 
   try {
     // Live search against GitHub, then upsert into our cache so the

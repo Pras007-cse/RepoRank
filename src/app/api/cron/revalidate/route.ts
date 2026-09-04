@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { runPeriodicRevalidation } from "@/lib/scoring";
+import { isAuthorizedBearer } from "@/lib/authSecrets";
 
 /**
  * Triggered on a schedule (Vercel Cron, GitHub Actions cron, or any external
@@ -11,7 +12,7 @@ import { runPeriodicRevalidation } from "@/lib/scoring";
  */
 export async function GET(req: NextRequest) {
   const auth = req.headers.get("authorization");
-  if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (!isAuthorizedBearer(auth, process.env.CRON_SECRET)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

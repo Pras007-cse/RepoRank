@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { rateLimit } from "@/lib/rateLimit";
+import { rateLimit, getClientIp } from "@/lib/rateLimit";
 import type { Category } from "@prisma/client";
 
 export async function GET(req: NextRequest) {
-  const ip = req.headers.get("x-forwarded-for") ?? "anonymous";
+  const ip = getClientIp(req);
   const rl = rateLimit(`leaderboard:${ip}`, { limit: 60, windowMs: 60_000 });
   if (!rl.allowed) {
     return NextResponse.json({ error: "Too many requests." }, { status: 429 });
@@ -13,7 +13,9 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const scope = searchParams.get("scope") ?? "global"; // global | trending | category
   const category = searchParams.get("category")?.toUpperCase();
-  const limit = Math.min(100, Number(searchParams.get("limit") ?? 50));
+
+  const rawLimit = Number(searchParams.get("limit") ?? 50);
+  const limit = Number.isFinite(rawLimit) ? Math.min(100, Math.max(1, Math.trunc(rawLimit))) : 50;
 
   if (scope === "global") {
     const users = await prisma.user.findMany({
