@@ -1,0 +1,57 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  background-color: #08090c;
+  color: #e2e5ee;
+}
+
+* {
+  border-color: #20242f;
+}
+
+::selection {
+  background-color: rgba(99, 102, 241, 0.35);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: #0d0f14;
+}
+::-webkit-scrollbar-thumb {
+  background: #2b303d;
+  border-radius: 8px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3d4354;
+}
+
+@layer components {
+  .card {
+    @apply rounded-xl border border-base-700 bg-base-850/60 backdrop-blur-sm;
+  }
+  .card-hover {
+    @apply transition-all duration-200 hover:border-accent/40 hover:shadow-glow;
+  }
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-dark disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg border border-base-600 bg-base-800 px-4 py-2 text-sm font-medium text-base-100 transition-colors hover:border-base-500 hover:bg-base-700 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .badge {
+    @apply inline-flex items-center rounded-full border border-base-600 bg-base-800 px-2.5 py-0.5 text-xs font-medium text-base-200;
+  }
+  .mono-num {
+    @apply font-mono tabular-nums;
+  }
+}

@@ -1,0 +1,191 @@
+// RepoRank database schema
+// PostgreSQL is the primary target; GitHub is treated as the source of truth
+// for star state, this schema only caches/verifies what GitHub reports.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- Auth (NextAuth / Auth.js models) ----------
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ---------- Core domain models ----------
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String?   @unique
+  emailVerified DateTime?
+  image         String?
+
+  // GitHub identity
+  githubId       Int?    @unique
+  githubLogin    String? @unique
+  githubBio      String?
+  githubUrl      String?
+  publicRepos    Int?
+  followers      Int?
+
+  // Encrypted GitHub access token, used server-side only to verify stars
+  // on this user's behalf. Never sent to the client.
+  githubAccessTokenEnc String? @db.Text
+
+  // Derived, cached scoring fields (recomputed from Star rows; GitHub state wins)
+  contributionScore Int      @default(0)
+  rank              Int?
+  lastSyncedAt      DateTime?
+
+  accounts Account[]
+  sessions Session[]
+  stars    Star[]
+  events   ActivityEvent[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([contributionScore])
+}
+
+model Repository {
+  id          String   @id @default(cuid())
+  githubId    Int      @unique
+  owner       String
+  name        String
+  fullName    String   @unique
+  description String?  @db.Text
+  url         String
+  language    String?
+  topics      String[] @default([])
+  category    Category @default(OTHER)
+
+  stargazersCount Int      @default(0) // cached from GitHub, refreshed periodically
+  lastFetchedAt   DateTime @default(now())
+
+  stars  Star[]
+  events ActivityEvent[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([language])
+  @@index([category])
+  @@index([stargazersCount])
+}
+
+enum Category {
+  WEB
+  MOBILE
+  AI_ML
+  DEVOPS
+  DATABASE
+  SECURITY
+  GAME_DEV
+  CLI_TOOLING
+  LIBRARY
+  OTHER
+}
+
+// A verified star: a User currently has an active GitHub star on a Repository.
+// This is the single source of contribution truth used to compute scores.
+// GitHub is authoritative — this row must be deleted the moment GitHub reports
+// the star is gone (via webhook or periodic re-check), which is what keeps
+// scores accurate and prevents duplicate counting (unique constraint below).
+model Star {
+  id           String     @id @default(cuid())
+  userId       String
+  repositoryId String
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  repository   Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+
+  status         StarStatus @default(PENDING)
+  verifiedAt     DateTime?
+  lastCheckedAt  DateTime   @default(now())
+  starredAt      DateTime? // reported by GitHub, when available
+  points         Int        @default(10) // scoring weight, allows future weighting rules
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // A user can only be counted once per repository — prevents duplicate counting.
+  @@unique([userId, repositoryId])
+  @@index([status])
+}
+
+enum StarStatus {
+  PENDING // just requested, awaiting verification against GitHub
+  VERIFIED // confirmed currently active on GitHub
+  REMOVED // GitHub reports the star no longer exists; excluded from score
+}
+
+// Append-only activity log for dashboards ("Activity history")
+model ActivityEvent {
+  id           String     @id @default(cuid())
+  userId       String
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  repositoryId String?
+  repository   Repository? @relation(fields: [repositoryId], references: [id], onDelete: SetNull)
+
+  type    ActivityType
+  message String
+  meta    Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+enum ActivityType {
+  STAR_VERIFIED
+  STAR_REMOVED
+  STAR_REQUESTED
+  RANK_CHANGED
+  SYNC_ERROR
+}
+
+// Records inbound GitHub webhook deliveries for idempotency + debugging
+model WebhookDelivery {
+  id         String   @id @default(cuid())
+  deliveryId String   @unique // GitHub's X-GitHub-Delivery header
+  event      String
+  payload    Json
+  processedAt DateTime @default(now())
+}
