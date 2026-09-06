@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { auth } from "@/lib/auth";
 import { reverifyStar } from "@/lib/scoring";
 import { rateLimit } from "@/lib/rateLimit";
 
@@ -13,7 +12,7 @@ export async function POST(
   req: NextRequest,
   { params }: { params: { repositoryId: string } }
 ) {
-  const session = await getServerSession(authOptions);
+  const session = await auth();
   if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }

@@ -1,24 +1,35 @@
-import type { NextAuthOptions } from "next-auth";
+import NextAuth from "next-auth";
+import type { NextAuthConfig } from "next-auth";
 import GitHubProvider from "next-auth/providers/github";
 import { PrismaAdapter } from "@auth/prisma-adapter";
 import { prisma } from "@/lib/prisma";
 import { encryptSecret } from "@/lib/crypto";
 
 /**
- * Central NextAuth configuration.
+ * Central Auth.js (next-auth v5) configuration.
+ *
+ * Pinned to next-auth's v5 line rather than v4 because every v4 release
+ * from 4.24.8 through 4.24.15 carries a critical vulnerability
+ * (GHSA-7rqj-j65f-68wh and related) and 4.24.7 - the last unaffected v4
+ * release - doesn't declare Next.js 15 as a supported peer. v5 is the only
+ * option that is both patched and officially compatible with Next 15/16,
+ * which Cloudflare's Wrangler Next.js integration requires (14.x support is
+ * being dropped and 14.2.35 still doesn't clear npm audit's high/critical
+ * threshold - see the security-hardening branch history for that finding).
  *
  * - Uses the GitHub OAuth provider with the `public_repo` scope, which is the
  *   minimum needed to read a user's starred repos and star repos on their
  *   behalf server-side. We deliberately do NOT request broader scopes.
- * - The GitHub access token is captured in the `jwt` callback and persisted
- *   encrypted on the User row (via `signIn`/`session` hooks) so background
- *   jobs and webhook handlers can verify star state without the client ever
- *   holding or seeing the raw token.
+ * - The GitHub access token is captured in the `signIn` callback and
+ *   persisted encrypted on the User row so background jobs and webhook
+ *   handlers can verify star state without the client ever holding or
+ *   seeing the raw token.
  * - Sessions are database-backed (Prisma adapter) so we can revoke access by
- *   deleting Session rows if needed.
+ *   deleting `Session` rows if needed.
  */
-export const authOptions: NextAuthOptions = {
+const config: NextAuthConfig = {
   adapter: PrismaAdapter(prisma),
+  secret: process.env.NEXTAUTH_SECRET,
   providers: [
     GitHubProvider({
       clientId: process.env.GITHUB_CLIENT_ID as string,
@@ -83,3 +94,5 @@ export const authOptions: NextAuthOptions = {
     signIn: "/",
   },
 };
+
+export const { handlers, auth, signIn, signOut } = NextAuth(config);
