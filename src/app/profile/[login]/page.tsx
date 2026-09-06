@@ -3,9 +3,10 @@ import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import StatCard from "@/components/StatCard";
 
-export default async function ProfilePage({ params }: { params: { login: string } }) {
+export default async function ProfilePage({ params }: { params: Promise<{ login: string }> }) {
+  const { login } = await params;
   const user = await prisma.user.findUnique({
-    where: { githubLogin: params.login },
+    where: { githubLogin: login },
   });
   if (!user) notFound();
 

@@ -10,7 +10,7 @@ import { rateLimit } from "@/lib/rateLimit";
  */
 export async function POST(
   req: NextRequest,
-  { params }: { params: { repositoryId: string } }
+  { params }: { params: Promise<{ repositoryId: string }> }
 ) {
   const session = await auth();
   if (!session?.user) {
@@ -23,7 +23,8 @@ export async function POST(
     return NextResponse.json({ error: "Too many refresh requests, try again shortly." }, { status: 429 });
   }
 
-  const star = await reverifyStar(userId, params.repositoryId);
+  const { repositoryId } = await params;
+  const star = await reverifyStar(userId, repositoryId);
   if (!star) {
     return NextResponse.json({ error: "Star not found." }, { status: 404 });
   }
