@@ -52,4 +52,8 @@ Out of scope:
 - Webhook payloads are HMAC-SHA256 verified and delivery-deduplicated.
 - Bearer-secret protected endpoints (cron) use constant-time comparison and
   fail closed if the secret is unset.
-- Dependabot and CodeQL run on every push/PR (see `.github/workflows`).
+- Dependabot and CodeQL run on every push/PR (see `.github/workflows`), and CI runs
+  `npm audit --audit-level=high` on every PR — the dependency tree currently has 0
+  known high/critical vulnerabilities.
+- Pinned to `next-auth@5.0.0-beta.32` rather than v4, since v4.24.8–4.24.15 all carry
+  a critical vulnerability and the last unaffected v4 release doesn't support Next 15.

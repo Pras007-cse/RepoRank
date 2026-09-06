@@ -135,7 +135,14 @@ scripts/revalidate-stars.ts  # standalone cron entrypoint
 - Global security headers (CSP, HSTS, `X-Frame-Options: DENY`, `X-Content-Type-Options`,
   `Permissions-Policy`, no `X-Powered-By`) are set for every route in `next.config.mjs`.
 - Dependabot and CodeQL run on a schedule and on every push/PR (`.github/workflows/`); CI
-  also runs `npm audit --audit-level=high` on every PR. See `SECURITY.md` for how to
-  report a vulnerability.
-- Runs on Next.js 14.2.35+, which includes the December 2025 patches for the React Server
-  Components DoS/source-exposure CVEs (CVE-2025-55183/55184/67779) — don't downgrade.
+  also runs `npm audit --audit-level=high` on every PR, and the dependency tree is
+  currently clean (0 known vulnerabilities). See `SECURITY.md` for how to report one.
+- Runs on Next.js 15.5.x, which includes the fixes for the batch of RSC/Server Actions
+  DoS and cache-poisoning CVEs disclosed against the 14.x/15.x line — don't downgrade.
+- Runs on `next-auth@5.0.0-beta.32` (Auth.js), not v4. Every v4 release from 4.24.8
+  through 4.24.15 carries a critical vulnerability
+  ([GHSA-7rqj-j65f-68wh](https://github.com/advisories/GHSA-7rqj-j65f-68wh) and related),
+  and 4.24.7 — the last unaffected v4 release — doesn't support Next.js 15 as a peer. v5 is
+  patched and the only version officially compatible with Next 15+; despite the "beta" tag
+  it's the actively maintained release line and what Auth.js recommends for App Router
+  apps today.

@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { getUserOctokit, starRepoForUser, isRepoStarredByUser, GitHubRateLimitError } from "@/lib/github";
 import { recomputeUserScore, recomputeGlobalRanks } from "@/lib/scoring";
@@ -14,7 +13,7 @@ const bodySchema = z.object({
 
 /** GET /api/stars — the current user's verified + pending stars */
 export async function GET() {
-  const session = await getServerSession(authOptions);
+  const session = await auth();
   if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
@@ -42,7 +41,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid request origin." }, { status: 403 });
   }
 
-  const session = await getServerSession(authOptions);
+  const session = await auth();
   if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
