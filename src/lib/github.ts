@@ -1,6 +1,4 @@
 import { Octokit } from "@octokit/rest";
-import { prisma } from "@/lib/prisma";
-import { decryptSecret } from "@/lib/crypto";
 
 /**
  * All server-side GitHub API access goes through this module. GitHub is the
@@ -15,18 +13,6 @@ export function getAppOctokit(): Octokit {
   return new Octokit({
     auth: process.env.GITHUB_APP_TOKEN || undefined,
   });
-}
-
-/** Returns an Octokit instance authenticated as the given user, using their
- * encrypted, stored OAuth access token. Used to check/star repos on their behalf. */
-export async function getUserOctokit(userId: string): Promise<Octokit | null> {
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { githubAccessTokenEnc: true },
-  });
-  if (!user?.githubAccessTokenEnc) return null;
-  const token = decryptSecret(user.githubAccessTokenEnc);
-  return new Octokit({ auth: token });
 }
 
 /**
@@ -63,36 +49,55 @@ export async function withRateLimitGuard<T>(
 }
 
 /**
- * Checks whether `login` currently has an active star on `owner/repo`.
- * Uses the authenticated GitHub "check if a repo is starred by a user"-style
- * call (via listing the user's starred repos is avoided for cost; instead we
- * use the per-user authenticated endpoint which is a single cheap request).
+ * Checks whether `login` currently has an active star on `owner/repo`, using
+ * only public data via the app-level token (or unauthenticated) — never a
+ * per-user token. The old per-user "does this authenticated user have this
+ * repo starred" check and the write-based star-granting call are gone; see
+ * fetchStarredRepoIds below, which is what the sync job now uses.
  */
-export async function isRepoStarredByUser(
-  userOctokit: Octokit,
-  owner: string,
-  repo: string
-): Promise<boolean> {
-  try {
-    await withRateLimitGuard(userOctokit, () =>
-      userOctokit.request("GET /user/starred/{owner}/{repo}", { owner, repo })
+
+/** Paginates GET /users/{username}/starred — public data, no per-user token needed. */
+export async function fetchStarredRepoIds(login: string): Promise<Set<number>> {
+  const octokit = getAppOctokit();
+  const ids = new Set<number>();
+  let page = 1;
+  const perPage = 100;
+  const MAX_PAGES = 20; // bounds one sync tick's cost even for accounts with huge starred lists
+
+  while (page <= MAX_PAGES) {
+    const { data } = await withRateLimitGuard(octokit, () =>
+      octokit.request("GET /users/{username}/starred", { username: login, per_page: perPage, page })
     );
-    return true; // 204 No Content = starred
-  } catch (err: unknown) {
-    const e = err as { status?: number };
-    if (e?.status === 404) return false; // not starred
-    throw err;
+    for (const repo of data as Array<{ id: number }>) ids.add(repo.id);
+    if (data.length < perPage) break;
+    page += 1;
   }
+  return ids;
 }
 
-export async function starRepoForUser(
-  userOctokit: Octokit,
-  owner: string,
-  repo: string
-): Promise<void> {
-  await withRateLimitGuard(userOctokit, () =>
-    userOctokit.request("PUT /user/starred/{owner}/{repo}", { owner, repo })
-  );
+/** Fetches a GitHub user's public profile, including bio — used by the ownership-challenge check. */
+export async function fetchGithubUserProfile(
+  login: string
+): Promise<{ id: number; login: string; name: string | null; bio: string | null; avatarUrl: string }> {
+  const octokit = getAppOctokit();
+  const { data } = await withRateLimitGuard(octokit, () => octokit.users.getByUsername({ username: login }));
+  return { id: data.id, login: data.login, name: data.name, bio: data.bio ?? null, avatarUrl: data.avatar_url };
+}
+
+/**
+ * Strictly parses a github.com repo URL into owner/repo and discards the
+ * rest — every actual network call is built from scratch against
+ * api.github.com, never against the pasted URL itself. Closes off SSRF via
+ * a crafted "repo URL" (e.g. pointing at an internal host, or a redirect).
+ */
+const GITHUB_REPO_URL_RE =
+  /^https:\/\/github\.com\/([a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?)\/([a-zA-Z0-9._-]{1,100})\/?$/;
+
+export function parseRepoUrl(input: string): { owner: string; repo: string } | null {
+  const trimmed = input.trim().replace(/\.git$/, "");
+  const match = GITHUB_REPO_URL_RE.exec(trimmed);
+  if (!match) return null;
+  return { owner: match[1], repo: match[2] };
 }
 
 /** Fetches canonical repo metadata from GitHub (used for discovery + caching). */

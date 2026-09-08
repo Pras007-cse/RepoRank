@@ -1,8 +1,8 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import {
   withRateLimitGuard,
   GitHubRateLimitError,
-  isRepoStarredByUser,
+  parseRepoUrl,
 } from "@/lib/github";
 import type { Octokit } from "@octokit/rest";
 
@@ -54,39 +54,38 @@ describe("src/lib/github.ts", () => {
     });
   });
 
-  describe("isRepoStarredByUser", () => {
-    it("returns true when GitHub confirms the star (HTTP 204)", async () => {
-      const mockOctokit = {
-        request: vi.fn().mockResolvedValue({ status: 204 }),
-      } as unknown as Octokit;
-
-      const result = await isRepoStarredByUser(mockOctokit, "testowner", "testrepo");
-      expect(result).toBe(true);
-      expect(mockOctokit.request).toHaveBeenCalledWith(
-        "GET /user/starred/{owner}/{repo}",
-        { owner: "testowner", repo: "testrepo" }
-      );
+  describe("parseRepoUrl", () => {
+    it("parses a plain github.com repo URL into owner/repo", () => {
+      expect(parseRepoUrl("https://github.com/octocat/Hello-World")).toEqual({
+        owner: "octocat",
+        repo: "Hello-World",
+      });
     });
 
-    it("returns false when GitHub reports the repo is not starred (HTTP 404)", async () => {
-      const notFoundErr = { status: 404, message: "Not Found" };
-      const mockOctokit = {
-        request: vi.fn().mockRejectedValue(notFoundErr),
-      } as unknown as Octokit;
-
-      const result = await isRepoStarredByUser(mockOctokit, "testowner", "testrepo");
-      expect(result).toBe(false);
+    it("strips a trailing .git and trailing slash", () => {
+      expect(parseRepoUrl("https://github.com/octocat/Hello-World.git")).toEqual({
+        owner: "octocat",
+        repo: "Hello-World",
+      });
+      expect(parseRepoUrl("https://github.com/octocat/Hello-World/")).toEqual({
+        owner: "octocat",
+        repo: "Hello-World",
+      });
     });
 
-    it("rethrows unexpected API errors (e.g. HTTP 500 internal server error)", async () => {
-      const serverErr = { status: 500, message: "Internal Server Error" };
-      const mockOctokit = {
-        request: vi.fn().mockRejectedValue(serverErr),
-      } as unknown as Octokit;
+    it("rejects non-github.com hosts (SSRF prevention)", () => {
+      expect(parseRepoUrl("https://evil.com/octocat/Hello-World")).toBeNull();
+      expect(parseRepoUrl("https://github.com.evil.com/octocat/Hello-World")).toBeNull();
+    });
 
-      await expect(
-        isRepoStarredByUser(mockOctokit, "testowner", "testrepo")
-      ).rejects.toEqual(serverErr);
+    it("rejects URLs with extra path segments, query strings, or fragments", () => {
+      expect(parseRepoUrl("https://github.com/octocat/Hello-World/issues/1")).toBeNull();
+      expect(parseRepoUrl("https://github.com/octocat/Hello-World?tab=readme")).toBeNull();
+    });
+
+    it("rejects non-URL garbage", () => {
+      expect(parseRepoUrl("not a url")).toBeNull();
+      expect(parseRepoUrl("javascript:alert(1)")).toBeNull();
     });
   });
 });

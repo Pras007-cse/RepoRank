@@ -1,103 +1,106 @@
 import { prisma } from "@/lib/prisma";
-import { getUserOctokit, isRepoStarredByUser, GitHubRateLimitError } from "@/lib/github";
+import { fetchStarredRepoIds, GitHubRateLimitError } from "@/lib/github";
 
 /**
- * Re-verifies a single user's star on a single repository against GitHub,
- * and updates local state (Star.status, User.contributionScore, activity
- * log) to match. This is the only place that should ever flip a Star
- * between VERIFIED and REMOVED — keeping GitHub as the single source of
- * truth and guaranteeing unstarred repos stop counting immediately.
+ * Detection-only star sync. This app never stars anything on GitHub on a
+ * user's behalf — it only ever reads a *verified builder's* real public
+ * starred list and reconciles it against registered repositories. GitHub
+ * is the sole source of truth; nothing here trusts a client claim that a
+ * star exists.
+ *
+ * Only builderVerified users are polled — an unverified GitHub identity
+ * could belong to anyone, so its "stars" can't be attributed to a real
+ * ProjectStar participant (see the identity-rule requirement this
+ * implements).
  */
-export async function reverifyStar(userId: string, repositoryId: string) {
-  const star = await prisma.star.findUnique({
-    where: { userId_repositoryId: { userId, repositoryId } },
-    include: { repository: true },
-  });
-  if (!star) return null;
 
-  const octokit = await getUserOctokit(userId);
-  if (!octokit) {
-    // No usable token — leave status as-is, log it, try again later.
-    await prisma.activityEvent.create({
-      data: {
-        userId,
-        repositoryId,
-        type: "SYNC_ERROR",
-        message: "Missing or invalid GitHub token; could not re-verify star.",
-      },
-    });
-    return star;
-  }
+/** Re-syncs one verified builder's starred set against all registered repos. */
+export async function syncBuilderStars(userId: string) {
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user || !user.builderVerified || !user.githubLogin) return null;
 
-  let stillStarred: boolean;
+  let starredRepoIds: Set<number>;
   try {
-    stillStarred = await isRepoStarredByUser(
-      octokit,
-      star.repository.owner,
-      star.repository.name
-    );
+    starredRepoIds = await fetchStarredRepoIds(user.githubLogin);
   } catch (err) {
-    if (err instanceof GitHubRateLimitError) {
-      // Don't penalize the user for our own rate limiting — just skip this cycle.
-      return star;
-    }
+    if (err instanceof GitHubRateLimitError) return null; // retry next tick, don't penalize the user
     await prisma.activityEvent.create({
       data: {
         userId,
-        repositoryId,
         type: "SYNC_ERROR",
-        message: `GitHub API error while re-verifying star: ${(err as Error).message}`,
+        message: `GitHub API error while syncing starred repos: ${(err as Error).message}`,
       },
     });
-    return star;
+    return null;
   }
 
-  const now = new Date();
+  // Only registered repositories matter — anything else the user starred
+  // (react, linux, whatever) is irrelevant noise per the product spec.
+  const registeredRepos = await prisma.repository.findMany({
+    where: { githubId: { in: [...starredRepoIds] } },
+    select: { id: true, githubId: true, fullName: true, ownerUserId: true },
+  });
 
-  if (stillStarred && star.status !== "VERIFIED") {
+  const currentlyActive = await prisma.star.findMany({
+    where: { userId, status: "VERIFIED" },
+    select: { repositoryId: true },
+  });
+  const currentlyActiveIds = new Set<string>(currentlyActive.map((s: { repositoryId: string }) => s.repositoryId));
+  const newlyIntersecting = new Set<string>(registeredRepos.map((r: { id: string }) => r.id));
+
+  let added = 0;
+  let removed = 0;
+
+  for (const repo of registeredRepos) {
+    if (currentlyActiveIds.has(repo.id)) continue;
+    if (repo.ownerUserId === userId) continue; // self-star: never counted, never even written
+
     await prisma.$transaction([
-      prisma.star.update({
-        where: { id: star.id },
-        data: { status: "VERIFIED", verifiedAt: now, lastCheckedAt: now },
+      prisma.star.upsert({
+        where: { userId_repositoryId: { userId, repositoryId: repo.id } },
+        create: { userId, repositoryId: repo.id, status: "VERIFIED", verifiedAt: new Date() },
+        update: { status: "VERIFIED", verifiedAt: new Date(), lastCheckedAt: new Date() },
       }),
       prisma.activityEvent.create({
         data: {
           userId,
-          repositoryId,
+          repositoryId: repo.id,
           type: "STAR_VERIFIED",
-          message: `Star on ${star.repository.fullName} verified.`,
+          message: `Verified star on ${repo.fullName}.`,
         },
       }),
     ]);
-    await recomputeUserScore(userId);
-  } else if (!stillStarred && star.status !== "REMOVED") {
-    // The user unstarred it on GitHub — remove the contribution immediately.
+    added += 1;
+  }
+
+  for (const repositoryId of currentlyActiveIds) {
+    if (newlyIntersecting.has(repositoryId)) continue;
     await prisma.$transaction([
       prisma.star.update({
-        where: { id: star.id },
-        data: { status: "REMOVED", lastCheckedAt: now },
+        where: { userId_repositoryId: { userId, repositoryId } },
+        data: { status: "REMOVED", lastCheckedAt: new Date() },
       }),
       prisma.activityEvent.create({
         data: {
           userId,
           repositoryId,
           type: "STAR_REMOVED",
-          message: `Star on ${star.repository.fullName} was removed on GitHub; contribution deducted.`,
+          message: "Star was removed on GitHub; contribution deducted.",
         },
       }),
     ]);
-    await recomputeUserScore(userId);
-  } else {
-    await prisma.star.update({
-      where: { id: star.id },
-      data: { lastCheckedAt: now },
-    });
+    removed += 1;
   }
 
-  return prisma.star.findUnique({ where: { id: star.id } });
+  await prisma.user.update({ where: { id: userId }, data: { lastSyncedAt: new Date() } });
+  if (added > 0 || removed > 0) {
+    await recomputeUserScore(userId);
+  }
+
+  return { added, removed };
 }
 
-/** Recomputes a user's cached contribution score from currently VERIFIED stars only. */
+/** Legacy "stars given" score — kept as a secondary leaderboard alongside the new received-stars ranking. */
 export async function recomputeUserScore(userId: string) {
   const agg = await prisma.star.aggregate({
     where: { userId, status: "VERIFIED" },
@@ -106,20 +109,17 @@ export async function recomputeUserScore(userId: string) {
   const score = agg._sum.points ?? 0;
   await prisma.user.update({
     where: { id: userId },
-    data: { contributionScore: score, lastSyncedAt: new Date() },
+    data: { contributionScore: score },
   });
   return score;
 }
 
-/**
- * Recomputes global ranks for all users based on cached contributionScore.
- * Cheap to run periodically since it only touches the User table.
- */
+/** Recomputes global ranks for the legacy "stars given" leaderboard. */
 export async function recomputeGlobalRanks() {
   const users = await prisma.user.findMany({
     where: { contributionScore: { gt: 0 } },
     orderBy: { contributionScore: "desc" },
-    select: { id: true, rank: true },
+    select: { id: true },
   });
 
   await prisma.$transaction(
@@ -130,24 +130,24 @@ export async function recomputeGlobalRanks() {
 }
 
 /**
- * Batch re-verification pass, intended to be triggered by a scheduled job
- * (cron / Vercel Cron / GitHub Action) as a fallback to webhooks, so star
- * status never drifts far from GitHub even if a webhook delivery is missed.
- * Processes the stalest-checked stars first, in small batches to stay well
- * within GitHub's rate limits.
+ * Batch sync pass, triggered by a scheduled job (cron / Vercel Cron / GitHub
+ * Action) — the fallback to webhooks so star status never drifts far from
+ * GitHub even if a delivery is missed. Processes the stalest-synced verified
+ * builders first, in small batches to stay well within GitHub's rate limits.
  */
 export async function runPeriodicRevalidation(batchSize = 50) {
-  const stars = await prisma.star.findMany({
-    where: { status: { in: ["VERIFIED", "PENDING"] } },
-    orderBy: { lastCheckedAt: "asc" },
+  const users = await prisma.user.findMany({
+    where: { builderVerified: true },
+    orderBy: { lastSyncedAt: { sort: "asc", nulls: "first" } },
     take: batchSize,
+    select: { id: true },
   });
 
-  const affectedUsers = new Set<string>();
-  for (const star of stars) {
-    await reverifyStar(star.userId, star.repositoryId);
-    affectedUsers.add(star.userId);
+  let usersProcessed = 0;
+  for (const u of users) {
+    const result = await syncBuilderStars(u.id);
+    if (result) usersProcessed += 1;
   }
   await recomputeGlobalRanks();
-  return { checked: stars.length, users: affectedUsers.size };
+  return { checked: users.length, usersProcessed };
 }

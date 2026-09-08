@@ -1,41 +1,71 @@
 import NextAuth from "next-auth";
 import type { NextAuthConfig } from "next-auth";
+import type { Adapter } from "next-auth/adapters";
 import GitHubProvider from "next-auth/providers/github";
 import { PrismaAdapter } from "@auth/prisma-adapter";
 import { prisma } from "@/lib/prisma";
-import { encryptSecret } from "@/lib/crypto";
+import { autoClaimReposForUser } from "@/lib/verification";
 
 /**
  * Central Auth.js (next-auth v5) configuration.
  *
- * Pinned to next-auth's v5 line rather than v4 because every v4 release
- * from 4.24.8 through 4.24.15 carries a critical vulnerability
- * (GHSA-7rqj-j65f-68wh and related) and 4.24.7 - the last unaffected v4
- * release - doesn't declare Next.js 15 as a supported peer. v5 is the only
- * option that is both patched and officially compatible with Next 15/16,
- * which Cloudflare's Wrangler Next.js integration requires (14.x support is
- * being dropped and 14.2.35 still doesn't clear npm audit's high/critical
- * threshold - see the security-hardening branch history for that finding).
+ * OAuth is an OPTIONAL "verify instantly with GitHub" convenience — never
+ * required. The primary path is the zero-permission bio-challenge
+ * (lib/verification.ts). Both converge on the same thing: User.builderVerified.
  *
- * - Uses the GitHub OAuth provider with the `public_repo` scope, which is the
- *   minimum needed to read a user's starred repos and star repos on their
- *   behalf server-side. We deliberately do NOT request broader scopes.
- * - The GitHub access token is captured in the `signIn` callback and
- *   persisted encrypted on the User row so background jobs and webhook
- *   handlers can verify star state without the client ever holding or
- *   seeing the raw token.
- * - Sessions are database-backed (Prisma adapter) so we can revoke access by
- *   deleting `Session` rows if needed.
+ * Scope is now just `read:user user:email` — no `public_repo`. This app no
+ * longer stars anything on a user's behalf (see lib/scoring.ts: the star
+ * mechanism is detection-only, polling GET /users/{username}/starred), so
+ * there's nothing to write, and no reason to ask for write permission.
+ *
+ * Pinned to next-auth's v5 line rather than v4 for the reasons recorded in
+ * the security-hardening branch history (v4.24.8-4.24.15 all carry a
+ * critical CVE; 4.24.7 doesn't support Next 15).
  */
+
+/**
+ * A pre-existing bio-verified User row (see lib/verification.ts) has no
+ * linked Account — it was created keyed by githubLogin alone, with no OAuth
+ * ever involved. If that same person later uses "verify instantly with
+ * GitHub", the base PrismaAdapter would try to INSERT a brand new User row
+ * and hit the githubLogin/githubId unique constraint, crashing sign-in.
+ * This wrapper intercepts createUser to merge into that existing row instead
+ * of creating a duplicate — the two verification paths must converge on one
+ * identity, never fork into two.
+ */
+function buildAdapter(): Adapter {
+  const base = PrismaAdapter(prisma);
+  return {
+    ...base,
+    async createUser(data) {
+      const githubLogin = (data as { githubLogin?: string }).githubLogin;
+      const existing = githubLogin
+        ? await prisma.user.findUnique({ where: { githubLogin } })
+        : null;
+      if (existing) {
+        return prisma.user.update({
+          where: { id: existing.id },
+          data: {
+            name: data.name ?? existing.name,
+            email: data.email ?? existing.email,
+            image: data.image ?? existing.image,
+          },
+        });
+      }
+      return base.createUser!(data);
+    },
+  };
+}
+
 const config: NextAuthConfig = {
-  adapter: PrismaAdapter(prisma),
+  adapter: buildAdapter(),
   secret: process.env.NEXTAUTH_SECRET,
   providers: [
     GitHubProvider({
       clientId: process.env.GITHUB_CLIENT_ID as string,
       clientSecret: process.env.GITHUB_CLIENT_SECRET as string,
       authorization: {
-        params: { scope: "read:user user:email public_repo" },
+        params: { scope: "read:user user:email" },
       },
       profile(profile) {
         return {
@@ -54,7 +84,7 @@ const config: NextAuthConfig = {
   },
   callbacks: {
     async signIn({ user, account, profile }) {
-      if (account?.provider === "github" && account.access_token) {
+      if (account?.provider === "github") {
         const gh = profile as unknown as {
           id: number;
           login: string;
@@ -63,6 +93,10 @@ const config: NextAuthConfig = {
           public_repos?: number;
           followers?: number;
         };
+
+        const alreadyVerified = await prisma.user
+          .findUnique({ where: { id: user.id }, select: { builderVerified: true } })
+          .then((u: { builderVerified: boolean } | null) => u?.builderVerified ?? false);
 
         await prisma.user.update({
           where: { id: user.id },
@@ -73,10 +107,19 @@ const config: NextAuthConfig = {
             githubUrl: gh.html_url ?? null,
             publicRepos: gh.public_repos ?? null,
             followers: gh.followers ?? null,
-            // Encrypted at rest; only decrypted server-side by lib/github.ts
-            githubAccessTokenEnc: encryptSecret(account.access_token),
+            // OAuth proves control at least as strongly as the bio
+            // challenge, so it's the other route to the same flag.
+            builderVerified: true,
+            verifiedAt: alreadyVerified ? undefined : new Date(),
           },
         });
+
+        if (!alreadyVerified && user.id) {
+          await autoClaimReposForUser(user.id, gh.login);
+          await prisma.activityEvent.create({
+            data: { userId: user.id, type: "BUILDER_VERIFIED", message: "Verified builder identity via GitHub sign-in." },
+          });
+        }
       }
       return true;
     },

@@ -1,8 +1,3 @@
-"use client";
-
-import { useState } from "react";
-import { useSession, signIn } from "next-auth/react";
-
 export type RepoCardData = {
   id: string;
   owner: string;
@@ -13,6 +8,7 @@ export type RepoCardData = {
   language?: string | null;
   category: string;
   stargazersCount: number;
+  ownerUserId?: string | null;
 };
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -28,37 +24,14 @@ const CATEGORY_LABELS: Record<string, string> = {
   OTHER: "Other",
 };
 
+/**
+ * No in-app "star for me" action anymore — starring happens on real GitHub,
+ * and this app only ever detects it afterward (see lib/scoring.ts). The
+ * button here just opens the real repo page; the star count shown is
+ * GitHub's own public stargazers_count, distinct from ProjectStar's
+ * verified-stars-received metric shown elsewhere (leaderboard/project page).
+ */
 export default function RepoCard({ repo }: { repo: RepoCardData }) {
-  const { data: session } = useSession();
-  const [status, setStatus] = useState<"idle" | "loading" | "verified" | "error">("idle");
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-
-  async function handleStar() {
-    if (!session) {
-      signIn("github");
-      return;
-    }
-    setStatus("loading");
-    setErrorMsg(null);
-    try {
-      const res = await fetch("/api/stars", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ repositoryId: repo.id }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setErrorMsg(data.error ?? "Failed to star repository.");
-        setStatus("error");
-        return;
-      }
-      setStatus("verified");
-    } catch {
-      setErrorMsg("Network error. Please try again.");
-      setStatus("error");
-    }
-  }
-
   return (
     <div className="card card-hover flex flex-col justify-between p-5">
       <div>
@@ -71,7 +44,14 @@ export default function RepoCard({ repo }: { repo: RepoCardData }) {
           >
             {repo.owner}/<span className="text-accent-light">{repo.name}</span>
           </a>
-          <span className="badge shrink-0">{CATEGORY_LABELS[repo.category] ?? repo.category}</span>
+          <div className="flex shrink-0 items-center gap-1.5">
+            {!repo.ownerUserId && (
+              <span className="badge !border-warn/40 !text-warn" title="No verified owner yet">
+                Unclaimed
+              </span>
+            )}
+            <span className="badge">{CATEGORY_LABELS[repo.category] ?? repo.category}</span>
+          </div>
         </div>
         <p className="mt-2 line-clamp-3 text-sm text-base-300">
           {repo.description || "No description provided."}
@@ -89,15 +69,10 @@ export default function RepoCard({ repo }: { repo: RepoCardData }) {
           <span className="mono-num">★ {repo.stargazersCount.toLocaleString()}</span>
         </div>
 
-        <button
-          onClick={handleStar}
-          disabled={status === "loading" || status === "verified"}
-          className={status === "verified" ? "btn-secondary !border-success/50 !text-success" : "btn-primary"}
-        >
-          {status === "verified" ? "✓ Verified" : status === "loading" ? "Starring…" : "Star on GitHub"}
-        </button>
+        <a href={repo.url} target="_blank" rel="noopener noreferrer" className="btn-primary">
+          Star on GitHub ↗
+        </a>
       </div>
-      {errorMsg && <p className="mt-2 text-xs text-danger">{errorMsg}</p>}
     </div>
   );
 }

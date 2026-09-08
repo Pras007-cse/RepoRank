@@ -12,7 +12,7 @@ async function main() {
   console.log("[revalidate-stars] starting periodic revalidation pass...");
   const result = await runPeriodicRevalidation(100);
   console.log(
-    `[revalidate-stars] checked ${result.checked} stars across ${result.users} users.`
+    `[revalidate-stars] checked ${result.checked} verified builders, synced ${result.usersProcessed}.`
   );
 }
 

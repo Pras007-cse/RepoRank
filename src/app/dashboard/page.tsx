@@ -1,15 +1,14 @@
-import { auth } from "@/lib/auth";
 import { redirect } from "next/navigation";
+import { resolveCurrentBuilderId } from "@/lib/builderSession";
 import { prisma } from "@/lib/prisma";
 import StatCard from "@/components/StatCard";
 import DashboardStarsList from "@/components/DashboardStarsList";
 
 export default async function DashboardPage() {
-  const session = await auth();
-  if (!session?.user) {
+  const userId = await resolveCurrentBuilderId();
+  if (!userId) {
     redirect("/");
   }
-  const userId = (session.user as { id: string }).id;
 
   const [user, stars, activity, totalRanked] = await Promise.all([
     prisma.user.findUnique({ where: { id: userId } }),

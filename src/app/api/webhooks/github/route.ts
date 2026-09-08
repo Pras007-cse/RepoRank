@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
-import { reverifyStar, recomputeUserScore, recomputeGlobalRanks } from "@/lib/scoring";
+import { recomputeUserScore, recomputeGlobalRanks } from "@/lib/scoring";
 
 /**
  * Receives GitHub's `star` webhook event (action: "created" | "deleted"),
@@ -77,20 +77,40 @@ export async function POST(req: NextRequest) {
     // We don't track this repo or don't know this GitHub user — nothing to do.
     return NextResponse.json({ ok: true, tracked: false });
   }
+  if (!user.builderVerified) {
+    // Identity rule: only a verified participant's stars count. An
+    // unverified GitHub identity could belong to anyone.
+    return NextResponse.json({ ok: true, tracked: false, reason: "unverified_identity" });
+  }
+  if (repository.ownerUserId === user.id) {
+    // Self-star never counts, never even gets written.
+    return NextResponse.json({ ok: true, tracked: false, reason: "self_star" });
+  }
 
   if (action === "created") {
+    // The webhook payload itself, once signature-verified above, IS GitHub's
+    // confirmation — no separate re-check call needed (unlike the old
+    // write-based flow, which had to confirm its own action succeeded).
     await prisma.star.upsert({
       where: { userId_repositoryId: { userId: user.id, repositoryId: repository.id } },
       create: {
         userId: user.id,
         repositoryId: repository.id,
-        status: "PENDING",
+        status: "VERIFIED",
+        verifiedAt: new Date(),
         starredAt: payload.starred_at ? new Date(payload.starred_at) : new Date(),
       },
-      update: {},
+      update: { status: "VERIFIED", verifiedAt: new Date(), lastCheckedAt: new Date() },
     });
-    // Confirm against the API (source of truth) before crediting score.
-    await reverifyStar(user.id, repository.id);
+    await prisma.activityEvent.create({
+      data: {
+        userId: user.id,
+        repositoryId: repository.id,
+        type: "STAR_VERIFIED",
+        message: `Verified star on ${repository.fullName} (webhook).`,
+      },
+    });
+    await recomputeUserScore(user.id);
   } else if (action === "deleted") {
     const star = await prisma.star.findUnique({
       where: { userId_repositoryId: { userId: user.id, repositoryId: repository.id } },
