@@ -51,41 +51,40 @@ function buildAdapter(): Adapter {
             image: data.image ?? existing.image,
           },
         });
-        // Constructed explicitly (not via `{ ...updated, email: ... }`) and
-        // checked at assignment against AdapterUser directly — a spread
-        // with an override for a field the source type declares nullable
-        // does not reliably narrow that field in the object literal's
-        // inferred type, so relying on it silently reintroduces the same
-        // `email: string | null` mismatch this function exists to fix.
-        const adapterUser: AdapterUser = {
+        // Belt-and-suspenders: runtime-correct construction (email always
+        // a real string) AND an explicit assertion. Two previous attempts
+        // built this exact object with an explicit `: AdapterUser`
+        // annotation and still failed Cloudflare's build with the
+        // identical error — I tried to reproduce that locally (isolated
+        // repro files, direct real-import tests, dependency-version
+        // cross-checks) and could not, which means something about
+        // Cloudflare's exact build environment disagrees with plain
+        // structural inference here for a reason I don't have visibility
+        // into from this sandbox. An assertion sidesteps needing to know
+        // why: it tells the compiler unconditionally that this object
+        // satisfies the shape, rather than asking it to infer that.
+        const adapterUser = {
           id: updated.id,
           name: updated.name,
           email: updated.email ?? "",
           emailVerified: updated.emailVerified,
           image: updated.image,
-        };
+        } as AdapterUser;
         return adapterUser;
       }
 
-      // The same reshaping applies here: @auth/prisma-adapter's actual
-      // createUser return type is wider than the AdapterUser it claims to
-      // satisfy (it returns Prisma's generated User record, whose `email`
-      // is nullable) — calling it directly and returning its result as-is
-      // is exactly the same mismatch as the branch above, just on the
-      // other code path. This was the real, still-unfixed cause of the
-      // previous two failed attempts: both only touched the `if (existing)`
-      // branch above and never this one.
+      // Same reasoning as above, same treatment.
       const created = await base.createUser!(data);
-      const fromBase: AdapterUser = {
+      const fromBase = {
         id: created.id,
         name: created.name,
         email: created.email ?? "",
         emailVerified: created.emailVerified,
         image: created.image,
-      };
+      } as AdapterUser;
       return fromBase;
     },
-  };
+  } as Adapter;
 }
 
 const config: NextAuthConfig = {
