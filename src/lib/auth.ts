@@ -1,6 +1,6 @@
 import NextAuth from "next-auth";
 import type { NextAuthConfig } from "next-auth";
-import type { Adapter } from "next-auth/adapters";
+import type { Adapter, AdapterUser } from "next-auth/adapters";
 import GitHubProvider from "next-auth/providers/github";
 import { PrismaAdapter } from "@auth/prisma-adapter";
 import { prisma } from "@/lib/prisma";
@@ -51,10 +51,20 @@ function buildAdapter(): Adapter {
             image: data.image ?? existing.image,
           },
         });
-        // AdapterUser requires a non-null `email: string` (unlike our
-        // Prisma User.email, which is nullable — GitHub emails can be
-        // private). Coerce with a fallback rather than widen the type.
-        return { ...updated, email: updated.email ?? "" };
+        // Constructed explicitly (not via `{ ...updated, email: ... }`) and
+        // checked at assignment against AdapterUser directly — a spread
+        // with an override for a field the source type declares nullable
+        // does not reliably narrow that field in the object literal's
+        // inferred type, so relying on it silently reintroduces the same
+        // `email: string | null` mismatch this function exists to fix.
+        const adapterUser: AdapterUser = {
+          id: updated.id,
+          name: updated.name,
+          email: updated.email ?? "",
+          emailVerified: updated.emailVerified,
+          image: updated.image,
+        };
+        return adapterUser;
       }
       return base.createUser!(data);
     },
