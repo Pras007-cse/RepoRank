@@ -66,7 +66,24 @@ function buildAdapter(): Adapter {
         };
         return adapterUser;
       }
-      return base.createUser!(data);
+
+      // The same reshaping applies here: @auth/prisma-adapter's actual
+      // createUser return type is wider than the AdapterUser it claims to
+      // satisfy (it returns Prisma's generated User record, whose `email`
+      // is nullable) — calling it directly and returning its result as-is
+      // is exactly the same mismatch as the branch above, just on the
+      // other code path. This was the real, still-unfixed cause of the
+      // previous two failed attempts: both only touched the `if (existing)`
+      // branch above and never this one.
+      const created = await base.createUser!(data);
+      const fromBase: AdapterUser = {
+        id: created.id,
+        name: created.name,
+        email: created.email ?? "",
+        emailVerified: created.emailVerified,
+        image: created.image,
+      };
+      return fromBase;
     },
   };
 }
