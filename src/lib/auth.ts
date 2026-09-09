@@ -43,7 +43,7 @@ function buildAdapter(): Adapter {
         ? await prisma.user.findUnique({ where: { githubLogin } })
         : null;
       if (existing) {
-        return prisma.user.update({
+        const updated = await prisma.user.update({
           where: { id: existing.id },
           data: {
             name: data.name ?? existing.name,
@@ -51,6 +51,10 @@ function buildAdapter(): Adapter {
             image: data.image ?? existing.image,
           },
         });
+        // AdapterUser requires a non-null `email: string` (unlike our
+        // Prisma User.email, which is nullable — GitHub emails can be
+        // private). Coerce with a fallback rather than widen the type.
+        return { ...updated, email: updated.email ?? "" };
       }
       return base.createUser!(data);
     },
